@@ -231,12 +231,18 @@ parse_body([], Body) -> Body;
 parse_body(_, [])    -> [];
 parse_body(_, <<>>)  -> [];
 parse_body("application/json", Body) ->
-    try jiffy:decode(Body)
-    catch _:_ -> {error, invalid_json}
+    try
+        jiffy:decode(Body)
+    catch
+        _:_ -> {error, invalid_json}
     end;
 parse_body("application/xml", Body) ->
-    {ok, Data, _} = erlsom:simple_form(binary_to_list(Body)),
-    Data;
+    try
+        {ok, Data, _} = erlsom:simple_form(binary_to_list(Body)),
+        Data
+    catch
+        _:_ -> {error, invalid_xml}
+    end;
 parse_body("text/xml", Body) ->
     parse_body("application/xml", Body);
 parse_body(_, Body) ->
