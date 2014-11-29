@@ -27,66 +27,135 @@
 -module(restc).
 
 -export([request/2, request/3, request/4, request/5, request/6]).
+-export([async_req/3, async_req/4, async_req/5, async_req/6,
+         async_receiver/2]).
 -export([construct_url/2, construct_url/3]).
 
--type method()       :: head | get | put | post | trace | options | delete.
--type url()          :: string().
--type headers()      :: [header()].
--type header()       :: {string(), string()}.
--type querys()       :: [qry()].
--type qry()          :: {string(), string()}.
--type status_codes() :: [status_code()].
--type status_code()  :: integer().
--type reason()       :: term().
--type content_type() :: json | xml | percent.
--type property()     :: atom() | tuple().
--type proplist()     :: [property()].
--type body()         :: proplist().
--type response()     :: {ok, Status::status_code(), Headers::headers(), Body::body()} |
-                        {error, Status::status_code(), Headers::headers(), Body::body()} |
-                        {error, Reason::reason()}.
+-type method()        :: head | get | put | post | trace | options | delete.
+-type url()           :: string().
+-type headers()       :: [header()].
+-type header()        :: {string(), string()}.
+-type querys()        :: [qry()].
+-type qry()           :: {string(), string()}.
+-type status_codes()  :: [status_code()].
+-type status_code()   :: integer().
+-type reason()        :: term().
+-type content_type()  :: json | xml | percent.
+-type property()      :: atom() | tuple().
+-type proplist()      :: [property()].
+-type body()          :: proplist().
+-type response()      :: {ok, Status::status_code(), Headers::headers(), Body::body()} |
+                         {error, Status::status_code(), Headers::headers(), Body::body()} |
+                         {error, Reason::reason()}.
+-type req_id()        :: reference().
+-type a_reponse()     :: {ok, req_id()} | {error, Reason::term()}.
+-type receiver()      :: pid() | fun((response()) -> any()) |
+                         {Module::atom(), Function::atom(), Args::list()}.
 
 -define(DEFAULT_ENCODING, json).
 -define(DEFAULT_CTYPE, "application/json").
+-define(RECEIVER, async_receiver).
 
-
-%%% API ========================================================================
-
+%%%===================================================================
+%%% API
+%%%===================================================================
 
 -spec request(Method::method(), Url::url()) -> Response::response().
 request(Method, Url) ->
     request(Method, ?DEFAULT_ENCODING, Url, [], [], []).
 
--spec request(Method::method(), Url::url(), Expect::status_codes()) -> Response::response().
+-spec request(Method::method(), Url::url(), Expect::status_codes()) ->
+              Response::response().
 request(Method, Url, Expect) ->
     request(Method, ?DEFAULT_ENCODING, Url, Expect, [], []).
 
--spec request(Method::method(), Type::content_type(), Url::url(),
-              Expect::status_codes()) -> Response::response().
+-spec request(Method::method(), Type::content_type(),
+              Url::url(), Expect::status_codes()) -> Response::response().
 request(Method, Type, Url, Expect) ->
     request(Method, Type, Url, Expect, [], []).
 
 -spec request(Method::method(), Type::content_type(), Url::url(),
-              Expect::status_codes(), Headers::headers()) -> Response::response().
+              Expect::status_codes(), Headers::headers()) ->
+              Response::response().
 request(Method, Type, Url, Expect, Headers) ->
     request(Method, Type, Url, Expect, Headers, []).
 
 -spec request(Method::method(), Type::content_type(), Url::url(),
-              Expect::status_codes(), Headers::headers(), Body::body()) -> Response::response().
+              Expect::status_codes(), Headers::headers(), Body::body()) ->
+              Response::response().
 request(Method, Type, Url, Expect, Headers, Body) ->
-    Headers1 = [{"Accept", get_accesstype(Type)++", */*;q=0.9"} | Headers],
+    Headers1 = [{"Accept", get_accesstype(Type) ++ ", */*;q=0.9"} | Headers],
     Headers2 = [{"Content-Type", get_ctype(Type)} | Headers1],
-    Request = get_request(Url, Type, Headers2,  Body),
-    Response = parse_response(httpc:request(Method, Request,
-                                            [], [{body_format, binary}])),
+    Request = get_request(Url, Type, Headers2, Body),
+    Response = parse_response(httpc:request(Method,
+                                            Request,
+                                            [],
+                                            [{body_format, binary}])),
     case Response of
         {ok, Status, H, B} ->
             case check_expect(Status, Expect) of
-                true -> Response;
+                true  -> Response;
                 false -> {error, Status, H, B}
             end;
         Error ->
             Error
+    end.
+
+%% @doc Executes the HTTP request in asynchronous fashion.
+%% @equiv async_req(Method, ?DEFAULT_ENCODING, Url, [], [], Callback)
+-spec async_req(method(), url(), receiver()) -> a_reponse().
+async_req(Method, Url, Callback) ->
+    async_req(Method, ?DEFAULT_ENCODING, Url, [], [], Callback).
+
+%% @doc Executes the HTTP request in asynchronous fashion.
+%% @equiv async_req(Method, Type, Url, [], [], Callback)
+-spec async_req(method(), content_type(), url(), receiver()) -> a_reponse().
+async_req(Method, Type, Url, Callback) ->
+    async_req(Method, Type, Url, [], [], Callback).
+
+%% @doc Executes the HTTP request in asynchronous fashion.
+%% @equiv async_req(Method, Type, Url, Headers, [], Callback)
+-spec async_req(method(), content_type(), url(), headers(),
+                receiver()) -> a_reponse().
+async_req(Method, Type, Url, Headers, Callback) ->
+    async_req(Method, Type, Url, Headers, [], Callback).
+
+%% @doc Executes the HTTP request in asynchronous fashion. The callback defines
+%%      how the client will deliver the result of an asynchroneous request.
+%%      pid()
+%%          Message(s) will be sent to this process in the format:
+%%          {http, ReplyInfo}
+%%      function/1
+%%          Information will be delivered to the receiver via calls to the
+%%          provided fun:
+%%              Receiver(ReplyInfo)
+%%      {Module, Function, Args}
+%%          Information will be delivered to the receiver via calls to the
+%%          callback function:
+%%              apply(Module, Function, [ReplyInfo | Args])
+-spec async_req(method(), content_type(), url(), headers(),
+                body(), receiver()) -> a_reponse().
+async_req(Method, Type, Url, Headers, Body, Callback) ->
+    Headers1 = [{"Accept", get_accesstype(Type) ++ ", */*;q=0.9"} | Headers],
+    Headers2 = [{"Content-Type", get_ctype(Type)} | Headers1],
+    Request = get_request(Url, Type, Headers2, Body),
+    Rec = {?MODULE, ?RECEIVER, [Callback]},
+    Opts = [{body_format, binary}, {sync, false}, {receiver, Rec}],
+    httpc:request(Method, Request, [], Opts).
+
+%% @private
+async_receiver({_, Result}, Callback) ->
+    Response = case Result of
+                   {error, _} -> Result;
+                   _          -> parse_response({ok, Result})
+               end,
+    case Callback of
+        {Module, Function, Args} ->
+            apply(Module, Function, [Response|Args]);
+        Fun when is_function(Fun, 1) ->
+            Fun(Response);
+        Pid when is_pid(Pid) ->
+            Pid ! {http, Response}
     end.
 
 -spec construct_url(FullPath::url(), Query::querys()) -> Url::url().
@@ -101,9 +170,9 @@ construct_url(SchemeNetloc, Path, Query) ->
     P = path_cat(P1, P2),
     urlunsplit(S, N, P, Query).
 
-
-%%% INTERNAL ===================================================================
-
+%%%===================================================================
+%%% Internals
+%%%===================================================================
 
 check_expect(_Status, []) ->
     true;
@@ -111,7 +180,7 @@ check_expect(Status, Expect) ->
     lists:member(Status, Expect).
 
 encode_body(json, Body) ->
-    jsx:to_json(Body);
+    jiffy:encode(Body);
 encode_body(percent, Body) ->
     mochiweb_util:urlencode(Body);
 encode_body(xml, Body) ->
@@ -158,15 +227,20 @@ parse_response({ok, {{_, Status, _}, Headers, Body}}) ->
 parse_response({error, Type}) ->
     {error, Type}.
 
-parse_body([], Body)                 -> Body;
-parse_body(_, [])                    -> [];
-parse_body(_, <<>>)                  -> [];
-parse_body("application/json", Body) -> jsx:to_term(Body);
-parse_body("application/xml", Body)  ->
+parse_body([], Body) -> Body;
+parse_body(_, [])    -> [];
+parse_body(_, <<>>)  -> [];
+parse_body("application/json", Body) ->
+    try jiffy:decode(Body)
+    catch _:_ -> {error, invalid_json}
+    end;
+parse_body("application/xml", Body) ->
     {ok, Data, _} = erlsom:simple_form(binary_to_list(Body)),
     Data;
-parse_body("text/xml", Body) -> parse_body("application/xml", Body);
-parse_body(_, Body)          -> Body.
+parse_body("text/xml", Body) ->
+    parse_body("application/xml", Body);
+parse_body(_, Body) ->
+    Body.
 
 get_accesstype(json)    -> "application/json";
 get_accesstype(xml)     -> "application/xml";
