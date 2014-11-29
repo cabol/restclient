@@ -41,9 +41,7 @@
 -type status_code()   :: integer().
 -type reason()        :: term().
 -type content_type()  :: json | xml | percent.
--type property()      :: atom() | tuple().
--type proplist()      :: [property()].
--type body()          :: proplist().
+-type body()          :: binary() | term().
 -type response()      :: {ok, Status::status_code(), Headers::headers(), Body::body()} |
                          {error, Status::status_code(), Headers::headers(), Body::body()} |
                          {error, Reason::reason()}.
@@ -209,6 +207,10 @@ path_fix({H, T}, Acc) ->
 
 get_request(Url, _, Headers, []) ->
     {Url, Headers};
+get_request(Url, _, Headers, undefined) ->
+    {Url, Headers};
+get_request(Url, Type, Headers, Body) when is_binary(Body) ->
+    {Url, Headers, get_ctype(Type), Body};
 get_request(Url, Type, Headers, Body) ->
     SendBody = encode_body(Type, Body),
     {Url, Headers, get_ctype(Type), SendBody}.
